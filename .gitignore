@@ -1,0 +1,37 @@
+# Runtime state written by the plugin itself, in the directory it lives in.
+# boot.log is the plugin's own log and accumulates real session ids.
+boot.log
+watch.json
+
+# Timestamped backups made while editing the plugin in place.
+*.bak
+*.bak-*
+*.orig
+
+# The author's own Chinese quick-reference sheet. It is a local working copy of
+# README.zh-CN.md and contains this machine's install paths, so it stays out of
+# the repo; the public documentation lives in README.md / README.zh-CN.md.
+使用说明.md
+
+# Build output from tools/make-dist.mjs. Generated, never committed: it embeds
+# whatever was in the working tree at the time, so it goes stale immediately.
+dist/
+
+# Dependencies
+node_modules/
+
+# Logs and scratch
+*.log
+logs/
+test/tmp/
+*.tmp
+_stage/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/

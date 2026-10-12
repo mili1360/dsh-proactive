@@ -1,0 +1,62 @@
+{
+  "name": "dsh-proactive",
+  "version": "0.2.1",
+  "description": "DSH「守夜人」：长任务（下载/安装/等待）在 agent 回合结束后跑完时，把消息塞回会话、叫醒 agent 主动汇报。机制同 dsh-subagent 回报父代理（agent.steer + createUserMessage）。",
+  "license": "MIT",
+  "author": "三文鱼",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mili1360/dsh-proactive.git"
+  },
+  "homepage": "https://github.com/mili1360/dsh-proactive#readme",
+  "bugs": {
+    "url": "https://github.com/mili1360/dsh-proactive/issues"
+  },
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node test/test.mjs",
+    "dist": "node tools/make-dist.mjs",
+    "verify:dist": "node tools/verify-dist.mjs",
+    "check": "node tools/make-dist.mjs && node test/test.mjs && node tools/verify-dist.mjs"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "watch.example.json",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "test/",
+    "tools/"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "proactive",
+    "notification",
+    "watchdog",
+    "wake-agent",
+    "long-running-task",
+    "file-watch"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "marketplace": {
+      "profiles": [
+        "web"
+      ],
+      "requiresBuildApproval": false,
+      "requiresRestart": true,
+      "manualSteps": false
+    }
+  }
+}

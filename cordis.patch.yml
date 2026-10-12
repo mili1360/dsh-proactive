@@ -1,0 +1,17 @@
+# dsh-proactive（守夜人）bundle 补丁层。
+# 作用：把「守夜人」插件挂进 profile 组合，让长任务在 agent 回合结束后跑完时能叫醒它。
+#
+# 可调项：
+#   enabled    false 可临时停用（不用改 profile）
+#   intervalMs 检查间隔，默认 15 秒
+#   stableRounds 「文件已下完」需要连续几次看到大小不变，默认 3
+#   maxRetries 叫醒失败最多重试几次，默认 5
+
+- insert:
+    - id: dsh-proactive
+      name: dsh-proactive
+      config:
+        enabled: true
+        intervalMs: 15000
+        stableRounds: 3
+        maxRetries: 5

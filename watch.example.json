@@ -1,0 +1,87 @@
+{
+  "_README": "dsh-proactive watch list. Copy this file to watch.json next to index.js, then edit the entries below. Every key starting with an underscore is an inert comment: the plugin preserves it when it writes the file back and ignores it when it reads. JSON has no comments, so comments are keys.",
+  "_HOW_IT_WORKS": "Every intervalMs (default 15000, floor 3000) the plugin reads this file and evaluates each entry that is not already fired. When a condition is met it injects one message into the session with agent.steer(createUserMessage(...)) - the same call dsh-subagent uses to report back to a parent agent - which wakes the agent so it can report to you. Edits take effect on the next tick; no DSH restart.",
+
+  "_TYPES": {
+    "file-stable": "path, rounds (default: the stableRounds config, 3). Fires when the file size is unchanged across that many consecutive checks - the usual way to detect a finished download.",
+    "file-exists": "path. Fires when the path exists as a FILE. A directory does not count.",
+    "file-size": "path, bytes. Fires when the file exists and its size is >= bytes. With bytes omitted the test is >= 0, so any existing file matches.",
+    "process-exit": "process (image name, e.g. curl.exe). Fires when the process is gone. Uses tasklist on Windows; on a platform where the lookup fails it returns nothing and the entry is skipped rather than fired.",
+    "port-open": "port, host (default 127.0.0.1). Fires when a TCP connection to host:port succeeds.",
+    "time": "at (an ISO date-time string). Fires when the clock passes it. '2026-01-01T22:00:00' is local time; append Z to mean UTC."
+  },
+
+  "_COMMON_FIELDS": {
+    "id": "Required in practice. Identifies the entry in boot.log and in the default message. Any string, including non-ASCII.",
+    "message": "The text the agent sees when it is woken. Write it as an instruction to the agent, not as a note to yourself.",
+    "sessionId": "Optional. Wake only this session. If that session is not open right now the entry is skipped for that tick and stays armed - it is never redirected to a different session. Omit it to wake the most recently active session.",
+    "sourceKind": "Optional, overrides the plugin default. 'plugin' (default) marks the injected message as plugin-originated, which is not rendered as a user bubble. 'user' renders it as if you had typed it.",
+    "form": "Optional, only meaningful with sourceKind 'plugin'. Free-form string stamped on the source; 'notice' additionally carries a 'summary' (first 120 characters of message) for UIs that render notices.",
+    "repeatSeconds": "Optional. Makes the entry repeat instead of firing once. After each fire the condition is re-armed rather than marked fired. Only 'time' (at moves to now + repeatSeconds) and 'file-size' (bytes is raised to the current size + 1) can be re-armed; on any other type it silently degrades to a one-shot entry.",
+    "fired": "Set to true by the plugin once the entry has fired. A fired entry is ignored. Delete the flag (or the entry) to re-arm it by hand.",
+    "retries": "Counted by the plugin when a fire attempt fails (no session available, or steer threw). After maxRetries failures the entry is marked fired and abandoned.",
+    "firedAt": "Timestamp written by the plugin next to fired.",
+    "firedCount": "Counter written by the plugin when a repeatable entry re-arms itself.",
+    "lastFiredAt": "Timestamp written by the plugin on each repeat fire."
+  },
+
+  "_NOTE_ON_PATHS": "Use your own absolute paths. On Windows a JSON string needs doubled backslashes, so C:\\path\\to\\big.iso is written \"C:\\\\path\\\\to\\\\big.iso\". Forward slashes work too and need no escaping.",
+
+  "watches": [
+    {
+      "id": "example-file-stable",
+      "type": "file-stable",
+      "path": "C:\\path\\to\\big.iso",
+      "rounds": 3,
+      "message": "The download finished: file size stopped changing. Check the final size, verify the file if a checksum is available, then report the result to the user."
+    },
+    {
+      "id": "example-file-exists",
+      "type": "file-exists",
+      "path": "C:\\path\\to\\build\\output.bin",
+      "message": "The expected output file now exists. Report what was produced to the user."
+    },
+    {
+      "id": "example-file-size",
+      "type": "file-size",
+      "path": "C:\\path\\to\\archive.zip",
+      "bytes": 1073741824,
+      "message": "The archive reached the 1 GiB threshold. Report progress to the user."
+    },
+    {
+      "id": "example-process-exit",
+      "type": "process-exit",
+      "process": "curl.exe",
+      "message": "The curl process is gone, so the transfer has ended. Inspect the result and report to the user."
+    },
+    {
+      "id": "example-port-open",
+      "type": "port-open",
+      "port": 8080,
+      "host": "127.0.0.1",
+      "message": "The service is listening on 127.0.0.1:8080. Probe it and report to the user."
+    },
+    {
+      "id": "example-time-once",
+      "type": "time",
+      "at": "2026-01-01T22:00:00",
+      "message": "The scheduled time has arrived. Report to the user."
+    },
+    {
+      "id": "example-time-repeating",
+      "type": "time",
+      "at": "2026-01-01T22:30:00",
+      "repeatSeconds": 300,
+      "message": "Reminder: this entry repeats every 5 minutes until it is removed from watch.json. Report to the user."
+    },
+    {
+      "id": "example-pinned-session",
+      "type": "file-size",
+      "path": "C:\\path\\to\\progress.log",
+      "bytes": 1048576,
+      "sessionId": "paste-a-session-id-here",
+      "repeatSeconds": 600,
+      "message": "The progress log grew past 1 MiB again. Check whether the last answer was cut short, finish it if so, then report to the user. This entry re-arms itself; do not edit it."
+    }
+  ]
+}
