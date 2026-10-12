@@ -135,6 +135,41 @@ apply() 被调用  enabled=true  intervalMs=15000
 
 没有 `boot.log` = bundle 根本没加载，回去检查 profile 注册。
 
+## 要求 / 兼容性
+
+**装上之后要确认它真的在工作** ✓ 光"profile 起得来"不算数 ✗
+插件可能加载得好好的、路由也活着，却把宿主弄坏 —— 我们真踩过 ✓
+验收动作: **新建一个会话、发一条消息** ✓
+（它平时是安静的，要等某个 watch 触发才会说话 —— 日志没动静是正常的）
+只要确认会话能建、agent 能回，就算装上成功 ✓
+如果连新会话都建不出来 ⇒ 把上面那行挂载删掉、重启 ✓
+
+针对 **DSH `0.1.0-rc.7`** 开发并测试 —— 这是一个**魔改版**，不是官方原版。别的版本可能把服务
+或事件名改掉：本插件用到 `ctx.on`、`ctx.effect`、`ctx.agents`，以及 `agent/created`、
+`agent/session-start`、`agent/inbox/inserted`、`agent/status`、`agent/disposed` 五个事件，
+还有 `@deepseek-ai/dsh-llm` 的 `agent.steer` + `createUserMessage`。
+
+版本对不上时，插件**不会**让 profile 起不来 ✓ 它会直接**停用**：没有监听、没有定时器，
+`boot.log` 里只会留一行（而不是平时那行 `守夜人就绪`）：
+
+```
+注册失败，插件停用: ctx.on 不可用（这个 DSH build 没有它）
+```
+
+**万一装上之后 profile 根本起不来**：把 `<profile>/cordis.patch.yml` 里挂载它的那段删掉
+（若你是用 `dsh.profile.bundles` 装的，就把数组里的 `"dsh-proactive"` 去掉），然后重启：
+
+```yaml
+- insert:
+    - id: dsh-proactive
+      name: dsh-proactive
+      config:
+        enabled: true
+        intervalMs: 15000
+        stableRounds: 3
+        maxRetries: 5
+```
+
 ## 配置
 
 写在 bundle 补丁（`cordis.patch.yml`）或 profile 的插件配置里：
@@ -165,7 +200,7 @@ apply() 被调用  enabled=true  intervalMs=15000
 | 没有可用会话（全关了，或指定的 `sessionId` 不在了）| 拒绝投递，`retries` +1，**保持待命**，后续轮次继续试到 `maxRetries`，超限才放弃并在 `boot.log` 留一行。**绝不投给别的会话**。 |
 | `agent.steer` 抛异常 | 被捕获、写日志、算一次重试。不外泄。 |
 | `watch.json` 缺失/为空/是裸数组/JSON 坏了 | 缺失就自动创建；裸数组当清单用；JSON 坏了这一轮就当作"没有监听项"，下轮再试。都不抛。 |
-| 其它任何失败 | `apply()` 全程 `try/catch`，连 `ctx.effect` 挂载失败都有裸 `setInterval` 兜底。**本插件的故障不可能让 DSH 起不来** —— 最坏情况只是 `boot.log` 里多一行。 |
+| 其它任何失败 | `apply()` 里每条注册都有守卫。`ctx.on` / `ctx.effect` 缺失或拒绝注册时，只记一行 `注册失败，插件停用: …` 然后停用 —— 不留半个监听、不留半个定时器。**本插件的故障不可能让 DSH 起不来** —— 最坏情况只是 `boot.log` 里多一行。 |
 
 另外两条值得明说：
 
@@ -179,7 +214,7 @@ apply() 被调用  enabled=true  intervalMs=15000
 npm test          # node test/test.mjs
 ```
 
-**63 个用例，全绿**，分三层：
+**68 个用例，全绿**，分三层：
 
 - **A. `checkCondition` 单元测试** —— 每种类型、每个边界：文件在/不在/是目录、
   阈值达标/未达、大小稳定/中途变大/盯到一半文件消失、进程在/不在、
@@ -187,7 +222,9 @@ npm test          # node test/test.mjs
 - **B. `apply()` 集成测试** —— 用假 `ctx` + 假 agent 跑真实流程：触发并送达、
   `fired` 去重、无会话时累加重试、`steer` 抛异常被吞、超 `maxRetries` 放弃、
   JSON 损坏不崩、裸数组格式兼容、清单不存在自动创建、`enabled:false` 不挂定时器、
-  `ctx.effect` 抛异常退回裸定时器、`sourceKind` 覆盖、默认消息、
+  `ctx.effect` 缺失或挂载失败时记一行日志并停用（**不再**退回裸定时器）、
+  上下文不兼容（`on` 抛异常 / 没有 `on` / `ctx` 是 `null`）时 apply 不抛且不留定时器、
+  `sourceKind` 覆盖、默认消息、
   `dispose` 后不投递、空清单不崩、**写回保留非 watches 的键**。
 - **C. 会话选择** —— 指定会话被尊重、指定但不存在的会话**不误投**、
   最近**活跃**优先于最近**注册**、`status: running` 算活跃、已 dispose 的会话不再被叫。
@@ -218,12 +255,11 @@ npm run check       # dist + test + verify:dist 一条龙
 
 ## 已知限制
 
-- **裸定时器兜底无法清理。** `ctx.effect` 抛异常时插件会退回裸 `setInterval`，
-  它会活到进程结束。这是有意的最后兜底（宁可漏一个定时器，也不要插件躺平），
-  但代价是：一个走过这条路的实例无法被完全卸载。
+- **裸定时器兜底已经取消（Unreleased）。** 0.2.1 及以前：`ctx.effect` 挂载失败会退回裸
+  `setInterval`，它活到进程结束。现在改成"记一行日志并停用"——插件只要无法完成注册就不会
+  继续跑，因此任何实例都能被完整卸载。
 - **`watch.json` 路径是模块级状态。** 同一进程内多次 `apply()` 会共用它，
-  两个实例同时加载会互相抢。一个 DSH 进程装一个插件（受支持的形态）没问题，
-  但正因如此，测试套件必须把"裸定时器兜底"那条放在最后跑（`test/test.mjs` 里有注释）。
+  两个实例同时加载会互相抢。一个 DSH 进程装一个插件（受支持的形态）没问题。
 - **`file-exists` 故意不认目录**："目录存在"和"下载完成"不是一回事。
 - **`process-exit` 在 Windows 上靠 `tasklist`。** 查不到进程时它返回"未知"，
   该轮跳过而不是触发 —— 缺 `tasklist` 不会造成误报。

@@ -146,6 +146,44 @@ apply() 被调用  enabled=true  intervalMs=15000
 
 No `boot.log` means the bundle never loaded — check the profile registration again.
 
+## Requirements / compatibility
+
+**After installing, confirm it actually works — a profile that boots is not proof.**
+A plugin can load cleanly, serve its routes and still break the host; we have seen exactly
+that. So the acceptance test is: **create a new session and send it one message** (the plugin
+is idle until a watch fires, so a quiet log is expected), then confirm the session exists and
+the agent answered. If new sessions cannot be created at all, remove the mount line above and
+restart.
+
+Developed and tested against DSH **`0.1.0-rc.7`** — a **customised** build, not a stock
+upstream release. Another version may register its services or name its events differently:
+this plugin uses `ctx.on`, `ctx.effect`, `ctx.agents`, the `agent/created`,
+`agent/session-start`, `agent/inbox/inserted`, `agent/status` and `agent/disposed` events, and
+`agent.steer` + `createUserMessage` from `@deepseek-ai/dsh-llm`.
+
+If your build does not match, the plugin **deactivates and says so** — it does **not** stop the
+profile from booting. Nothing keeps running (no listeners, no timer), and `boot.log` gets ONE
+line instead of the ready line:
+
+```
+注册失败，插件停用: ctx.on 不可用（这个 DSH build 没有它）
+```
+
+**If the profile will not start at all after installing**, remove the mounted lines from
+`<profile>/cordis.patch.yml` (or drop `"dsh-proactive"` from `dsh.profile.bundles`, if that is
+how you installed it) and restart:
+
+```yaml
+- insert:
+    - id: dsh-proactive
+      name: dsh-proactive
+      config:
+        enabled: true
+        intervalMs: 15000
+        stableRounds: 3
+        maxRetries: 5
+```
+
 ## Configuration
 
 Set through the bundle patch (`cordis.patch.yml`) or the profile's own plugin config:
@@ -178,7 +216,7 @@ top-level key**, so your own `_note` / `_README` comment keys survive.
 | No session is available (all closed, or the pinned `sessionId` is gone) | The wake-up is refused, `retries` is incremented, and the entry stays armed. It is retried on later ticks up to `maxRetries`, then marked fired and abandoned with a line in `boot.log`. It is never delivered to a different session. |
 | `agent.steer` throws | Caught, logged, counted as a retry. Nothing propagates. |
 | `watch.json` is missing, empty, a bare array, or corrupt JSON | A missing file is created; a bare array is accepted as the watch list; corrupt JSON reads as "no watches this tick" and is retried next tick. None of these throw. |
-| Anything else fails | `apply()` is wrapped end to end in `try/catch`, and even a failing `ctx.effect` falls back to a bare `setInterval`. **A failure in this plugin cannot stop DSH from booting** — the worst case is a line in `boot.log`. |
+| Anything else fails | Every registration in `apply()` is guarded. A missing or refusing `ctx.on` / `ctx.effect` logs ONE line (`注册失败，插件停用: …`) and deactivates the plugin — no listener or timer is left behind. **A failure in this plugin cannot stop DSH from booting** — the worst case is a line in `boot.log`. |
 
 Two more properties worth stating plainly:
 
@@ -194,7 +232,7 @@ Two more properties worth stating plainly:
 npm test          # node test/test.mjs
 ```
 
-**63 cases, all green**, in two layers plus a session-selection group:
+**68 cases, all green**, in two layers plus a session-selection group:
 
 - **A. `checkCondition` unit tests** — every type at its boundaries: file present / absent /
   a directory, size at and below the threshold, size stable / growing / vanishing mid-watch,
@@ -203,7 +241,9 @@ npm test          # node test/test.mjs
 - **B. `apply()` integration tests** — a fake `ctx` and fake agents driving the real code
   path: fire and delivery, `fired` de-duplication, retry counting without a session, a
   throwing `steer`, giving up past `maxRetries`, corrupt JSON, the bare-array format, the
-  auto-created watch file, `enabled: false`, the bare-timer fallback, `sourceKind` overrides,
+  auto-created watch file, `enabled: false`, the deactivation path when `ctx.effect` is
+  missing or refuses the registration, a hostile `ctx` (`on` throwing, `on` absent, `ctx`
+  null) that must not throw and must not leave a timer running, `sourceKind` overrides,
   the default message, delivery after `dispose`, an empty list, and preservation of non-watch
   keys on write-back.
 - **C. Session selection** — pinned session honoured, pinned-but-absent session *not*
@@ -239,14 +279,13 @@ and asserts that the instructions still contain the sections an installing agent
 
 ## Known limitations
 
-- **The bare-timer fallback cannot be cleaned up.** If `ctx.effect` throws, the plugin falls
-  back to a plain `setInterval` that lives until the process exits. That is the intended
-  last-resort path (better a leaked timer than a dead plugin), but it means a plugin instance
-  cannot be fully unloaded once it has gone down that road.
+- **The bare-timer fallback is gone (Unreleased).** Up to 0.2.1, a failing `ctx.effect` fell
+  back to a plain `setInterval` that lived until the process exited. That fallback was removed:
+  a plugin that cannot register is now deactivated with one line in `boot.log`, so a plugin
+  instance can always be fully unloaded.
 - **`watch.json` is module-level state.** The path is shared across `apply()` calls in one
   process, so two loaded instances would fight over it. Fine for one plugin per DSH process —
-  which is the supported shape — but the test suite has to run its fallback-timer case last
-  for exactly this reason (there is a comment in `test/test.mjs`).
+  which is the supported shape.
 - **`file-exists` ignores directories** on purpose: "the directory exists" is not the same
   claim as "the download finished".
 - **`process-exit` relies on `tasklist` on Windows.** Where the process lookup fails, the

@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **Hardening: `apply()` can no longer take a profile down, and can no longer half-activate.**
+  Every registration now goes through a guard: a build that has no `ctx.on`, or that refuses
+  one of the five event registrations, gets ONE line in `boot.log`
+  (`注册失败，插件停用: ...`), any listener already registered is handed back, and the plugin
+  deactivates instead of throwing out of `apply()` into the loader. The trigger was a real
+  third-party plugin (`cancanqiqi/dsh-human-subagent`) whose `apply()` threw
+  `Cannot read properties of undefined (reading 'register')` and stopped a whole DSH profile
+  from booting.
+- **Behaviour change on one failure path: the bare-`setInterval` fallback is gone.** When
+  `ctx.effect` was missing or threw, this plugin used to fall back to a raw `setInterval` that
+  nothing could ever clear — so a "deactivated" plugin kept reading `watch.json` and waking
+  agents after an unload or reload. It now logs one line and deactivates. Everything else on
+  the success path is byte for byte unchanged. The test that pinned the old fallback (B10) was
+  rewritten to pin the new behaviour, and `README.md` / `README.zh-CN.md` now carry a
+  *Requirements / compatibility* section.
+- **A regression test for it** (B15: a hostile `ctx` — `on` throwing, `on` absent, `ctx` null —
+  must not throw, must log exactly one deactivation line per failure, and must leave no timer
+  running). Proven by hand: running the new suite against the pre-hardening `index.js` gives
+  `64 passed, 4 failed`; removing the guard inside `reg()` gives `67 passed, 1 failed`;
+  reinstating the old bare-timer fallback gives `65 passed, 3 failed`; restored, the suite is
+  `68 passed, 0 failed`.
 
 ## [0.2.1] - 2026-10-08
 
@@ -89,9 +111,12 @@ and a runtime watch list.
 - **The bare-timer fallback cannot be cleaned up.** If `ctx.effect` throws, the plugin's
   fallback `setInterval` lives until the process exits. A plugin instance that has taken that
   path therefore cannot be fully unloaded. This is the intended last resort, not an oversight.
+  (**Removed in Unreleased** — the plugin now deactivates instead, so this limitation no longer
+  applies.)
 - **`watch.json` is module-level state**, shared across `apply()` calls in one process, so two
   loaded instances would contend for it. One plugin per DSH process is the supported shape; the
-  test suite consequently runs its fallback-timer case last.
+  test suite consequently runs its fallback-timer case last. (**The ordering constraint is gone
+  in Unreleased**, because there is no longer an uncleared fallback timer.)
 - **Watching is poll-based.** With the default `intervalMs: 15000` a met condition can wait up
   to one interval before the agent is woken.
 - **`file-stable` cannot distinguish a stalled download from a finished one** — both look like

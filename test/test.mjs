@@ -425,21 +425,49 @@ section('C. 会话选择（"叫醒哪个会话"）')
     ctx._cleanup()
 }
 
-// --- B10（放最后！）: ctx.effect 抛异常 → 退回裸定时器，仍能触发 ---
-// 注意：这条路径故意用【裸 setInterval】且无法清理（这是插件的兜底设计），
-// 所以它必须跑在【所有其他测试之后】，否则它的定时器会持续读取模块级的
-// WATCH_FILE（指向后面测试的清单），把别人的 watch 标记成 fired。已验证。
+// --- B10: ctx.effect 挂载失败 → 记一行日志并停用，绝不抛出去 ---
+// 加固后【不再】退回"裸 setInterval"：裸定时器没人能收回来（插件停用或重载之后它还在跑，
+// 继续读 watch.json 去叫醒 agent）。这条路径现在和别的注册失败一样，只写一行日志然后停用。
 {
     const b10Watch = path.join(TMP, 'watch-b10.json')
     fs.writeFileSync(b10Watch, JSON.stringify({ watches: [{ id: 't10', type: 'file-exists', path: tmpFile, message: 'FALLBACK' }] }))
     const ctx = makeCtx({ throwOnEffect: true })
     const ag = makeAgent('sess-10'); ctx._agents.push(ag)
-    apply(ctx, { enabled: true, intervalMs: 3000, watchFile: b10Watch, logFile: tmpLog })
+    let threw = false
+    try { apply(ctx, { enabled: true, intervalMs: 3000, watchFile: b10Watch, logFile: tmpLog }) } catch { threw = true }
     ctx._emit('agent/created', { agent: ag })
     await sleep(QUIET)
-    ok('B10 effect异常: 日志有"退回裸定时器"', logText().includes('退回裸定时器'))
-    ok('B10 effect异常: 裸定时器仍触发', JSON.parse(fs.readFileSync(b10Watch, 'utf8')).watches[0].fired === true)
-    ok('B10 effect异常: 消息送达到 agent', ag._got.length === 1 && ag._got[0]?.content?.[0]?.text === 'FALLBACK')
+    ok('B10 effect异常: apply 不抛', !threw)
+    ok('B10 effect异常: 日志有"注册失败，插件停用"', logText().includes('注册失败，插件停用'))
+    ok('B10 effect异常: 确实停用了（没叫醒）', JSON.parse(fs.readFileSync(b10Watch, 'utf8')).watches[0].fired !== true && ag._got.length === 0)
+    ctx._cleanup()
+}
+
+// --- B15: 上下文不兼容（ctx.on 抛异常 / 根本没有 / ctx 是 null）→ 一行日志 + 停用，不抛 ---
+// 这就是本次加固针对的失败模式：第三方插件 cancanqiqi/dsh-human-subagent 调了本 build
+// 没有的服务方法，异常从 apply() 冒进加载器，整个 profile 起不来。
+// 注意：这条路径【绝不能】靠外面那个 try/catch 兜底 —— 那样只会记一条"致命异常"，
+// 而且插件已经注册了一半。必须是"一行日志说清楚哪一步失败 + 干净停用"。
+{
+    const b15Log = path.join(TMP, 'boot-hostile.log')
+    const b15Watch = path.join(TMP, 'watch-b15.json')
+    fs.writeFileSync(b15Watch, JSON.stringify({ watches: [{ id: 't11', type: 'file-exists', path: tmpFile, message: 'HOSTILE' }] }))
+    const cases = [
+        { label: 'ctx.on 抛异常', ctx: { agents: { list: () => [] }, on: () => { throw new Error('boom-on') }, effect: () => {} } },
+        { label: 'ctx.on 不存在', ctx: { agents: { list: () => [] }, effect: () => {} } },
+        { label: 'ctx 是 null', ctx: null },
+    ]
+    for (const c of cases) {
+        let threw = null
+        try { apply(c.ctx, { enabled: true, intervalMs: 3000, watchFile: b15Watch, logFile: b15Log }) }
+        catch (e) { threw = e }
+        ok('B15 ' + c.label + ': apply 不抛', threw === null, threw ? String(threw.message) : '')
+    }
+    await sleep(QUIET)
+    const text = fs.readFileSync(b15Log, 'utf8')
+    const lines = (text.match(/注册失败，插件停用/g) || []).length
+    ok('B15 每次失败正好一行"注册失败，插件停用"', lines === cases.length, '实际 ' + lines)
+    ok('B15 停用后没有定时器在跑（监听项没被标记 fired）', JSON.parse(fs.readFileSync(b15Watch, 'utf8')).watches[0].fired !== true)
 }
 
 // ============================================================

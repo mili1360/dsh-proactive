@@ -194,17 +194,39 @@ export function apply(ctx, config) {
             return sid
         }
 
-        ctx.on('agent/created', ({ agent }) => { if (agent) remember(agent) })
-        ctx.on('agent/session-start', ({ agent }) => { if (agent) remember(agent) })
-        // 有消息进收件箱 = 用户刚在这个会话说话 → 最可靠的"活跃"信号
-        ctx.on('agent/inbox/inserted', ({ agent }) => { if (agent) remember(agent) })
-        // 状态变成 running（开始干活）也算活跃
-        ctx.on('agent/status', ({ agent, status }) => { if (agent && status === 'running') remember(agent) })
+        // 注册阶段（加固，见 README「要求 / 兼容性」）：插件【仅仅是不兼容】不该把整个
+        // profile 拖垮 —— 第三方插件 cancanqiqi/dsh-human-subagent 就是调了本 build 没有的
+        // 服务方法，异常从 apply() 冒进加载器，整个 profile 起不来。所以每条注册都过 reg()：
+        // 失败只写一行日志、把已经注册的收回来、然后停用（绝不抛出去）。
+        // 一切都在时，走的是和以前一模一样的路径。
+        const disposers = []
+        const reg = (event, fn) => {
+            try {
+                const d = ctx.on(event, fn)
+                if (typeof d === 'function') disposers.push(d)
+                return true
+            } catch (e) {
+                for (const d of disposers) { try { d() } catch {} }
+                trace('注册失败，插件停用: ctx.on(' + event + ') ' + (e?.message || e))
+                return false
+            }
+        }
+        if (!ctx || typeof ctx.on !== 'function') {
+            trace('注册失败，插件停用: ctx.on 不可用（这个 DSH build 没有它）')
+            return
+        }
 
-        ctx.on('agent/disposed', ({ agent }) => {
+        if (!reg('agent/created', ({ agent }) => { if (agent) remember(agent) })) return
+        if (!reg('agent/session-start', ({ agent }) => { if (agent) remember(agent) })) return
+        // 有消息进收件箱 = 用户刚在这个会话说话 → 最可靠的"活跃"信号
+        if (!reg('agent/inbox/inserted', ({ agent }) => { if (agent) remember(agent) })) return
+        // 状态变成 running（开始干活）也算活跃
+        if (!reg('agent/status', ({ agent, status }) => { if (agent && status === 'running') remember(agent) })) return
+
+        if (!reg('agent/disposed', ({ agent }) => {
             const s = sidOf(agent)
             if (s) { agents.delete(s); activeAt.delete(s) }
-        })
+        })) return
 
         // 兜底：插件加载时已经存在的 agent
         try { for (const a of (ctx.agents?.list?.() ?? [])) remember(a) } catch {}
@@ -310,7 +332,15 @@ export function apply(ctx, config) {
             }
         }
 
-        // 定时器：用 ctx.effect 持有清理函数，插件停用/更新时自动收掉
+        // 定时器：用 ctx.effect 持有清理函数，插件停用/更新时自动收掉。
+        // 加固：拿不到 ctx.effect 就【停用】，不再退回"裸 setInterval"。裸定时器没人能收回来
+        // （插件停用或重载之后它还在跑，继续读 watch.json 去叫醒 agent），而"注册不全还硬跑"
+        // 正是这次要消灭的失败模式。注册失败一律走"一行日志 + 停用"这条路。
+        if (typeof ctx.effect !== 'function') {
+            for (const d of disposers) { try { d() } catch {} }
+            trace('注册失败，插件停用: ctx.effect 不可用（这个 DSH build 没有它）')
+            return
+        }
         try {
             ctx.effect(() => {
                 const h = setInterval(() => { void tick() }, Math.max(3000, Number(cfg.intervalMs) || 15000))
@@ -318,9 +348,9 @@ export function apply(ctx, config) {
             })
             trace('定时器已挂载')
         } catch (e) {
-            // 兜底：即便是裸 setInterval，也要让插件跑起来（DSH 进程退出时会自然结束）
-            trace('ctx.effect 挂载失败，退回裸定时器: ' + (e?.message || e))
-            setInterval(() => { void tick() }, Math.max(3000, Number(cfg.intervalMs) || 15000))
+            for (const d of disposers) { try { d() } catch {} }
+            trace('注册失败，插件停用: ctx.effect 挂载失败 ' + (e?.message || e))
+            return
         }
 
         // 确保 watch.json 存在（方便用户直接编辑）
