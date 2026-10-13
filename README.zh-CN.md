@@ -270,6 +270,16 @@ npm run check       # dist + test + verify:dist 一条龙
 - **轮询式。** `intervalMs: 15000` 意味着条件达成到 agent 被叫醒之间最多有一个间隔的延迟。
   缩短间隔要花 CPU，下限是 3000 ms。
 
+## 相关插件
+
+同一套东西，三个插件各治一头 —— 都是"会话越跑越长、越贵越慢"这件事：
+
+- **[dsh-history-fold](https://github.com/mili1360/dsh-history-fold)** —— 把可见历史里最老的一段折成
+  一条消息（原文进无损归档），每轮请求带的 token 就降下来 ✓
+- **[dsh-session-vacuum](https://github.com/mili1360/dsh-session-vacuum)** —— 开机后把会话日志里
+  "定稿后没人读"的流式碎片删掉，长会话加载时不再膨胀成几个 GB ✓
+
+
 ## 许可证
 
 MIT —— 见 [LICENSE](LICENSE)。

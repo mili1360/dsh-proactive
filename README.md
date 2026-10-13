@@ -297,6 +297,19 @@ and asserts that the instructions still contain the sections an installing agent
 - **Watching is poll-based.** With `intervalMs: 15000` a condition can be met up to one
   interval before the agent is woken. Shorter intervals cost CPU; the floor is 3000 ms.
 
+## Related plugins
+
+Three small DSH plugins, each aimed at one part of the same problem — a session that gets
+expensive and slow the longer it runs:
+
+- **[dsh-history-fold](https://github.com/mili1360/dsh-history-fold)** — folds the oldest part
+  of the visible history into one message backed by a lossless local archive, so each request
+  carries fewer tokens.
+- **[dsh-session-vacuum](https://github.com/mili1360/dsh-session-vacuum)** — deletes the dead
+  streaming fragments out of session logs at startup, so loading a long session stops expanding
+  into gigabytes.
+
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
