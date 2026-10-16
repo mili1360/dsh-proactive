@@ -313,3 +313,9 @@ expensive and slow the longer it runs:
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+**If this saved you from wandering back to check on a job, a ★ is what lets the next person
+find it.** Discovery here is ranked by stars — the plugin directories and GitHub's own search
+both sort by them. Bug reports and "this did not work on my build" are just as valuable.
