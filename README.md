@@ -112,6 +112,26 @@ Entries whose files are actually a moving target (a growing log, a progress file
 
 ## Install
 
+One command, straight from the repository:
+
+```bash
+dsh plugin add --profile web github:mili1360/dsh-proactive
+```
+
+That resolves the package over git, adds it to the profile's `dependencies`, and registers
+the bundle in `dsh.profile.bundles` on its own — verified on `0.2.0-rc.2`. Then **restart
+DSH**: a registered bundle is only picked up at boot.
+
+Works the same way from a local clone, if you would rather build from source:
+
+```bash
+git clone https://github.com/mili1360/dsh-proactive.git
+dsh plugin add --profile web ./dsh-proactive
+```
+
+<details>
+<summary>Doing it by hand instead</summary>
+
 The plugin imports `@deepseek-ai/dsh-llm`, so it has to sit somewhere Node can resolve that
 package from — a normal place for that is inside the profile's module tree.
 
@@ -145,6 +165,8 @@ apply() 被调用  enabled=true  intervalMs=15000
 ```
 
 No `boot.log` means the bundle never loaded — check the profile registration again.
+
+</details>
 
 ## Requirements / compatibility
 
