@@ -2,8 +2,10 @@
 
 > 让 DSH 的 agent 干长活（下载几十 GB、等编译、等安装）时，**回合结束后活才干完，
 > 它自己会开口告诉你** —— 不用你回来问"好了吗"。
+>
+> v0.3.0 起它也能**盯对话**：聊到某个话题时，往系统提示里塞一句提醒（不打扰、不唤醒回合）。
 
-[![tests](https://img.shields.io/badge/tests-63%20passing-brightgreen)](#测试)
+[![tests](https://img.shields.io/badge/tests-83%20passing-brightgreen)](#测试)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [English →](README.md)
@@ -57,7 +59,12 @@ agent.steer(createUserMessage({
 如果确实想让它渲染成用户气泡，可以按项覆盖成 `source.kind = 'user'`
 （测试套件正是用这一点证明两者确实不同）。
 
-## 六种触发类型
+## 触发类型
+
+前六种是"看文件/看进程/看时间"，v0.3.0 又加了两种"**看对话**"的。
+未知类型永远不会触发：静默跳过，不猜。
+
+### 看文件 / 看进程 / 看时间
 
 | `type` | 什么时候触发 | 必填字段 |
 |---|---|---|
@@ -68,18 +75,51 @@ agent.steer(createUserMessage({
 | `port-open` | 能连上 `host:port` —— **服务起来了** | `port`、`host`（默认 `127.0.0.1`）|
 | `time` | 时间越过 `at` —— 闹钟 | `at`（ISO 时间串，不带 `Z` = 本地时间）|
 
-**未知类型永远不会触发**：静默跳过，不猜。
+### 看对话（v0.3.0）
 
-### 公共字段
+| `type` | 什么时候触发 | 必填字段 |
+|---|---|---|
+| `session-match` | 最近 `window` 条**用户**消息里，命中 `keywords` 任意一个 | `keywords`、`window`（默认 3）、`repeatSeconds`（默认 600，命中后冷却）|
+| `session-semantic` | 把最近对话丢给模型，它回答"是"就触发 —— **判断交给 AI，规则交给它自己** | `prompt`、`window`（默认 5）、`cooldownSeconds`（默认 900）|
+
+`session-match` 的两个纪律：
+
+- **只看用户消息**。插件自己注入的消息（`source.kind === 'plugin'`）不计入 —— 否则
+  插件说一句"插件"就会触发自己，越滚越大。
+- **看的是你的话，不看模型的话**。模型一提到这个话题就提醒，那叫自我强化。
+
+`session-semantic` 走 DSH 自己的 `ctx.llm.stream()`（跟 compaction 摘要同一条路），
+所以**不用另配 API key / provider**。三条成本纪律缺一不可：
+
+- `cooldownSeconds`：两次模型判断之间至少隔这么久（默认 900 秒）
+- **没有新用户消息直接跳过**，不浪费一次调用
+- `timeoutMs`（默认 8000）硬超时 + `maxTokens: 8`（只让它回"是/否"）
+
+模型不回答、抛错、超时 —— **一律当"否"**。提醒不能因为 AI 挂了而误触发。
+
+### 注入方式：叫醒，或者不打扰
+
+| `via` | 效果 | 适合 |
+|---|---|---|
+| `steer`（默认） | 往对话里插一条消息、**唤醒一轮** | 活干完了要 agent 主动汇报 |
+| `system-prompt` | 挂到一条短期标记上，由 `ctx.systemPrompt` 在**每轮提示装配**时读走；`rounds`（默认 3）轮后自动消失 | "提醒一句，但别打断我" |
+
+`system-prompt` 的省钱点：没命中时返回空串，`systemPrompt` 会把空 section 过滤掉，
+**一行 token 都不多花**。拿不到 `systemPrompt` 服务时自动退化成 `steer`，绝不静默丢掉提醒。
+
+## 公共字段
 
 | 字段 | 说明 |
 |---|---|
-| `id` | 在 `boot.log` 和默认消息里标识这一项。任意字符串。 |
+| `id` | 在 `boot.log` 和默认消息里标识这一项。任意字符串。**运行时状态（冷却、消息基线）按它存，别随便改。** |
 | `message` | 叫醒时 agent 看到的话 —— **建议写成给 agent 的指令**，而不是写给自己的备忘。 |
 | `sessionId` | 可选。只叫醒这个会话。它不在时该轮跳过、**保持待命**，**绝不改投给别的会话**。不写 = 叫醒最近活跃的那个。 |
 | `sourceKind` | 可选。`plugin`（默认，不渲染）/ `user`（渲染成用户气泡）。 |
 | `form` | 可选，配合 `sourceKind: 'plugin'`。给来源打个自由标签；`notice` 还会带上 `summary`（`message` 前 120 字）。 |
 | `repeatSeconds` | 可选。不标记 fired，而是"重新上膛"，见下。 |
+| `via` | 可选。`steer`（默认）/ `system-prompt`，见上。 |
+| `rounds` | 可选。`system-prompt` 注入能活几轮（默认 3）。 |
+| `cooldownSeconds` | 可选，仅 `session-semantic`。两次模型判断的最小间隔（默认 900）。 |
 
 ### 叫醒哪个会话
 

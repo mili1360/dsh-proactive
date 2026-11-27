@@ -1,16 +1,16 @@
 {
   "_README": "dsh-proactive watch list. Copy this file to watch.json next to index.js, then edit the entries below. Every key starting with an underscore is an inert comment: the plugin preserves it when it writes the file back and ignores it when it reads. JSON has no comments, so comments are keys.",
   "_HOW_IT_WORKS": "Every intervalMs (default 15000, floor 3000) the plugin reads this file and evaluates each entry that is not already fired. When a condition is met it injects one message into the session with agent.steer(createUserMessage(...)) - the same call dsh-subagent uses to report back to a parent agent - which wakes the agent so it can report to you. Edits take effect on the next tick; no DSH restart.",
-
   "_TYPES": {
     "file-stable": "path, rounds (default: the stableRounds config, 3). Fires when the file size is unchanged across that many consecutive checks - the usual way to detect a finished download.",
     "file-exists": "path. Fires when the path exists as a FILE. A directory does not count.",
     "file-size": "path, bytes. Fires when the file exists and its size is >= bytes. With bytes omitted the test is >= 0, so any existing file matches.",
     "process-exit": "process (image name, e.g. curl.exe). Fires when the process is gone. Uses tasklist on Windows; on a platform where the lookup fails it returns nothing and the entry is skipped rather than fired.",
     "port-open": "port, host (default 127.0.0.1). Fires when a TCP connection to host:port succeeds.",
-    "time": "at (an ISO date-time string). Fires when the clock passes it. '2026-01-01T22:00:00' is local time; append Z to mean UTC."
+    "time": "at (an ISO date-time string). Fires when the clock passes it. '2026-01-01T22:00:00' is local time; append Z to mean UTC.",
+    "session-match": "keywords (string[]), window (default 3), repeatSeconds (default 600). Fires when any of the last N USER messages contains any keyword. Plugin-sourced messages are ignored so the plugin never triggers itself. Only the user text is inspected, never the model output.",
+    "session-semantic": "prompt, window (default 5), cooldownSeconds (default 900), timeoutMs (default 8000). Asks the model (via ctx.llm.stream, the same path compaction uses) whether the recent conversation matches `prompt`; fires on a yes. Cost guards: cooldown, no call when no new user message arrived, hard timeout, maxTokens 8. Errors/timeouts count as no."
   },
-
   "_COMMON_FIELDS": {
     "id": "Required in practice. Identifies the entry in boot.log and in the default message. Any string, including non-ASCII.",
     "message": "The text the agent sees when it is woken. Write it as an instruction to the agent, not as a note to yourself.",
@@ -22,11 +22,12 @@
     "retries": "Counted by the plugin when a fire attempt fails (no session available, or steer threw). After maxRetries failures the entry is marked fired and abandoned.",
     "firedAt": "Timestamp written by the plugin next to fired.",
     "firedCount": "Counter written by the plugin when a repeatable entry re-arms itself.",
-    "lastFiredAt": "Timestamp written by the plugin on each repeat fire."
+    "lastFiredAt": "Timestamp written by the plugin on each repeat fire.",
+    "via": "steer (default) wakes the agent with a message in the conversation; system-prompt injects silently via ctx.systemPrompt and never wakes a turn.",
+    "rounds": "How many prompt assemblies the system-prompt notice survives (default 3).",
+    "cooldownSeconds": "session-semantic only: minimum seconds between two model judgements (default 900)."
   },
-
   "_NOTE_ON_PATHS": "Use your own absolute paths. On Windows a JSON string needs doubled backslashes, so C:\\path\\to\\big.iso is written \"C:\\\\path\\\\to\\\\big.iso\". Forward slashes work too and need no escaping.",
-
   "watches": [
     {
       "id": "example-file-stable",
@@ -82,6 +83,34 @@
       "sessionId": "paste-a-session-id-here",
       "repeatSeconds": 600,
       "message": "The progress log grew past 1 MiB again. Check whether the last answer was cut short, finish it if so, then report to the user. This entry re-arms itself; do not edit it."
+    },
+    {
+      "id": "example-session-match",
+      "type": "session-match",
+      "_comment": "Cheap topic trigger: when the user talks about a risky area, quietly put a one-line reminder into the system prompt.",
+      "keywords": [
+        "session log",
+        "rebuild",
+        "plugin",
+        "compact"
+      ],
+      "window": 3,
+      "via": "system-prompt",
+      "rounds": 3,
+      "repeatSeconds": 900,
+      "message": "[reminder] read the postmortem before touching the session log."
+    },
+    {
+      "id": "example-session-semantic",
+      "type": "session-semantic",
+      "_comment": "Expensive but smarter: let the model decide whether the conversation is about to do the same risky thing again.",
+      "prompt": "Is the recent conversation about to modify session logs, plugins, or rebuild a session file?",
+      "window": 5,
+      "via": "system-prompt",
+      "rounds": 2,
+      "cooldownSeconds": 900,
+      "timeoutMs": 8000,
+      "message": "[reminder] re-read the postmortem first."
     }
   ]
 }

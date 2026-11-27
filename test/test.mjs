@@ -58,7 +58,7 @@ function readWatches() { return JSON.parse(fs.readFileSync(tmpWatch, 'utf8')) }
 function logText() { try { return fs.readFileSync(tmpLog, 'utf8') } catch { return '' } }
 
 /** 造一个假的 ctx（只实现插件用到的接口） */
-function makeCtx({ throwOnEffect = false } = {}) {
+function makeCtx({ throwOnEffect = false, systemPrompt = undefined, llm = undefined } = {}) {
     const agents = []
     const listeners = new Map()
     const cleanups = []
@@ -66,6 +66,8 @@ function makeCtx({ throwOnEffect = false } = {}) {
         agents: { list: () => agents },
         on: (ev, fn) => { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(fn) },
         effect: (fn) => { if (throwOnEffect) throw new Error('effect 挂了'); cleanups.push(fn()) },
+        ...(systemPrompt ? { systemPrompt } : {}),
+        ...(llm ? { llm } : {}),
         // 测试辅助
         _agents: agents,
         _emit: (ev, p) => (listeners.get(ev) || []).forEach(f => f(p)),
@@ -73,10 +75,45 @@ function makeCtx({ throwOnEffect = false } = {}) {
     }
 }
 
-function makeAgent(id, { onSteer } = {}) {
+/** 假的 systemPrompt 服务：记录 variable/section 注册，能手动"装配一次"看注入值 */
+function makeSystemPrompt() {
+    const vars = new Map()
+    const sections = []
+    return {
+        variable: (n, p) => { vars.set(n, p); return () => vars.delete(n) },
+        section: (s) => { sections.push(s); return () => {} },
+        _vars: vars,
+        _sections: sections,
+        /** 模拟一次提示装配：返回本轮的 section 文本（空串表示没注入） */
+        _assemble: () => sections.map((s) => String(s.text).replace(/\{\{([a-z0-9_]+)\}\}/g, (_, n) => {
+            const p = vars.get(n)
+            const v = typeof p === 'function' ? p() : ''
+            return v === undefined || v === null ? '' : String(v)
+        })).filter((t) => t.length > 0),
+    }
+}
+
+/** 假的 llm 服务：把收到的 prompt 记下来，按预设回答 */
+function makeLlm(answer = '否') {
+    const calls = []
+    return {
+        stream: (options) => (async function* () {
+            calls.push(options)
+            const text = String(options.messages?.[0]?.content?.[0]?.text || '')
+            const reply = typeof answer === 'function' ? answer(text) : answer
+            if (reply) yield { type: 'text-delta', text: reply }
+            yield { type: 'finish', reason: { kind: 'stop' } }
+        })(),
+        _calls: calls,
+    }
+}
+
+function makeAgent(id, { onSteer, options } = {}) {
     const got = []
     return {
         session: { id },
+        // session-semantic 要 provider/model（跟 compaction 摘要取的是同一个来源）
+        options: options || { provider: 'deepseek-official', model: 'deepseek-flash' },
         steer: (msg) => { got.push(msg); if (onSteer) onSteer(msg) },
         _got: got,
     }
@@ -468,6 +505,131 @@ section('C. 会话选择（"叫醒哪个会话"）')
     const lines = (text.match(/注册失败，插件停用/g) || []).length
     ok('B15 每次失败正好一行"注册失败，插件停用"', lines === cases.length, '实际 ' + lines)
     ok('B15 停用后没有定时器在跑（监听项没被标记 fired）', JSON.parse(fs.readFileSync(b15Watch, 'utf8')).watches[0].fired !== true)
+}
+
+// ============================================================
+section('C. session-match / session-semantic / system-prompt 注入（2026-11-27 新增）')
+// ============================================================
+{
+    const { pushUserText, matchSession } = await import('../index.js')
+
+    // 清窗口
+    for (let i = 0; i < 8; i++) pushUserText('无关内容' + i)
+
+    const w = { id: 'k', type: 'session-match', keywords: ['会话日志', '插件'], window: 3 }
+    ok('C1 无关消息不命中', matchSession(w) === false)
+    pushUserText('帮我把会话日志重建一下')
+    ok('C2 命中关键词', matchSession(w) === true)
+    // 冷却：刚命中过，立刻再判应该是 false
+    ok('C3 命中后进入冷却', matchSession(w) === false)
+
+    // window=1 只认最后一条
+    const narrow = { id: 'k2', type: 'session-match', keywords: ['插件'], window: 1 }
+    pushUserText('这个插件怎么用')
+    pushUserText('今天天气不错')
+    ok('C4 window=1 只认最后一条', matchSession(narrow) === false)
+
+    // 没有关键词恒 false
+    ok('C5 无关键词恒 false', matchSession({ type: 'session-match' }) === false)
+}
+
+// --- C6~C9: system-prompt 注入通道 + via:'system-prompt' 不插对话 ---
+{
+    const sp = makeSystemPrompt()
+    const ctx = makeCtx({ systemPrompt: sp })
+    const cWatch = path.join(TMP, 'watch-c.json')
+    const cLog = path.join(TMP, 'boot-c.log')
+    fs.writeFileSync(cWatch, JSON.stringify({
+        watches: [{
+            id: 'sp注入', type: 'file-exists', path: tmpFile,
+            via: 'system-prompt', rounds: 2, message: '【测试】去读检讨',
+        }],
+    }))
+    apply(ctx, { enabled: true, intervalMs: 3000, watchFile: cWatch, logFile: cLog })
+    await sleep(QUIET)
+    ok('C6 日志显示系统提示通道已就绪', fs.readFileSync(cLog, 'utf8').includes('系统提示注入通道已就绪'))
+    const assembled = sp._assemble()
+    ok('C7 第一轮装配能读到注入内容', assembled.some((t) => t.includes('去读检讨')), JSON.stringify(assembled))
+    const second = sp._assemble()
+    ok('C8 第二轮仍在（rounds:2）', second.some((t) => t.includes('去读检讨')))
+    const third = sp._assemble()
+    ok('C9 rounds 用完后不再注入', third.length === 0, JSON.stringify(third))
+    ctx._cleanup()
+}
+
+// --- C10~C13: session-semantic 走 llm，且没有新消息不判 ---
+{
+    const sp = makeSystemPrompt()
+    const llm = makeLlm('是')
+    const ctx = makeCtx({ systemPrompt: sp, llm })
+    const agent = makeAgent('sem-1')
+    ctx._agents.push(agent)
+    ctx._emit('agent/created', { agent })   // 让 apply 内部的 agents 表记到它（pickAgent 靠这张表）
+    const sWatch = path.join(TMP, 'watch-sem.json')
+    const sLog = path.join(TMP, 'boot-sem.log')
+    fs.writeFileSync(sWatch, JSON.stringify({
+        watches: [{
+            id: '语义判断', type: 'session-semantic',
+            prompt: '最近对话是不是在讨论会话日志？',
+            window: 2, via: 'system-prompt', rounds: 1,
+            cooldownSeconds: 900, timeoutMs: 3000,
+            message: '【语义命中】去看检讨',
+        }],
+    }))
+    apply(ctx, { enabled: true, intervalMs: 3000, watchFile: sWatch, logFile: sLog })
+    // 没消息时不应调用 llm
+    await sleep(QUIET)
+    ok('C10 没有新消息时不调 llm', llm._calls.length === 0, 'calls=' + llm._calls.length)
+
+    ctx._emit('session/message', { type: 'user/message', data: { content: [{ type: 'text', text: '我们聊聊会话日志的重建' }] } })
+    await sleep(QUIET)
+    ok('C11 有新消息时调用了 llm', llm._calls.length === 1, 'calls=' + llm._calls.length)
+    ok('C12 请求带 provider/model', !!(llm._calls[0] && llm._calls[0].provider && llm._calls[0].model), JSON.stringify(llm._calls[0] && { p: llm._calls[0].provider, m: llm._calls[0].model }))
+    const asm = sp._assemble()
+    ok('C13 语义命中后排入系统提示', asm.some((t) => t.includes('语义命中')), JSON.stringify(asm))
+    ctx._cleanup()
+}
+
+// --- C14: 语义判断返回"否"时不注入 ---
+{
+    const sp = makeSystemPrompt()
+    const llm = makeLlm('否')
+    const ctx = makeCtx({ systemPrompt: sp, llm })
+    const agent2 = makeAgent('sem-2')
+    ctx._agents.push(agent2)
+    ctx._emit('agent/created', { agent: agent2 })
+    const nWatch = path.join(TMP, 'watch-sem2.json')
+    const nLog = path.join(TMP, 'boot-sem2.log')
+    fs.writeFileSync(nWatch, JSON.stringify({
+        watches: [{
+            id: '语义否', type: 'session-semantic',
+            prompt: '相关吗？', window: 2, via: 'system-prompt', rounds: 1,
+            cooldownSeconds: 900, timeoutMs: 3000, message: '不该出现的提醒',
+        }],
+    }))
+    apply(ctx, { enabled: true, intervalMs: 3000, watchFile: nWatch, logFile: nLog })
+    ctx._emit('session/message', { type: 'user/message', data: { content: [{ type: 'text', text: '今天天气真好' }] } })
+    await sleep(QUIET)
+    const asm = sp._assemble()
+    ok('C14 语义返回否 -> 不注入', asm.length === 0, JSON.stringify(asm))
+    ctx._cleanup()
+}
+
+// --- C15: 插件来源的消息不参与 session-match（防自己触发自己）---
+{
+    const { pushUserText: push } = await import('../index.js')
+    const ctx = makeCtx()
+    const pWatch = path.join(TMP, 'watch-plan.json')
+    fs.writeFileSync(pWatch, JSON.stringify({ watches: [] }))
+    apply(ctx, { enabled: true, intervalMs: 3000, watchFile: pWatch, logFile: path.join(TMP, 'boot-plan.log') })
+    const w2 = { id: 'x', type: 'session-match', keywords: ['不该命中'], window: 1 }
+    for (let i = 0; i < 8; i++) push('无关')
+    ctx._emit('session/message', {
+        type: 'user/message',
+        data: { source: { kind: 'plugin', plugin: 'dsh-proactive' }, content: [{ type: 'text', text: '不该命中 的插件消息' }] },
+    })
+    ok('C15 插件来源消息不计入话题窗口', (await checkCondition(w2)) === false)
+    ctx._cleanup()
 }
 
 // ============================================================

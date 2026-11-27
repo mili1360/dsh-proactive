@@ -64,6 +64,103 @@ const DEFAULTS = {
     logFile: null,
 }
 
+// ---------------------------------------------------------------- session-semantic（2026-11-27 加）
+//
+// 三文鱼要的"外接 AI 语义注入"：不是拿关键词硬匹配，而是把小窗口的最近对话丢给模型，
+// 让它判断"这个话题该不该提醒"。实现上走 DSH 自己的 ctx.llm.stream（跟 compaction 摘要用同一条路），
+// 所以不用额外的 API key、不用另配 provider。
+//
+// 三条成本纪律（否则每 15 秒烧一次）：
+//   1. 冷却：cooldownSeconds（默认 900 秒）内最多判一次
+//   2. 有新用户消息才判：记消息序号，没新消息直接 false
+//   3. 硬超时：默认 8 秒，超时当作"不提醒"
+let llmRef = null
+let userMsgVersion = 0
+
+/** 调一次模型做 yes/no 判断。失败/超时一律 false（提醒不能因为 AI 挂了而误触发）。 */
+async function judgeWithLlm(agent, prompt, signal) {
+    if (!agent || !llmRef) return false
+    const target = agent.options && agent.options.provider && agent.options.model
+        ? { provider: agent.options.provider, model: agent.options.model }
+        : null
+    if (!target) return false
+    const messages = [{
+        role: 'user',
+        content: [{ type: 'text', text: prompt }],
+    }]
+    let text = ''
+    try {
+        const stream = llmRef.stream({
+            provider: target.provider,
+            model: target.model,
+            messages,
+            maxTokens: 8,
+            sessionId: agent.session && agent.session.id,
+            purpose: 'proactive-judge',
+            ...(signal ? { signal } : {}),
+        })
+        for await (const chunk of stream) {
+            if (chunk && chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
+        }
+    } catch {
+        return false
+    }
+    const s = text.trim().toLowerCase()
+    return s.startsWith('是') || s.startsWith('yes') || s.startsWith('true')
+}
+//
+// 背景：三文鱼要的是"聊到某个话题时自动提醒我去读检讨"，守夜人原来只有
+// time / file-size / file-stable / process-exit / port-open 这几种"看文件看端口"的触发，
+// 没有"看对话内容"这一档。这里补上。
+//
+// 两个新能力：
+//   1. type: 'session-match' —— 最近 N 条【用户】消息里命中 keywords 任意一个就触发。
+//      只看用户消息，不看模型自己的输出（否则模型一说这个话题就会自我触发，越滚越大）。
+//   2. via: 'system-prompt' —— 触发后不 steer（不插对话、不唤醒新回合），而是把 message
+//      挂到一个短期标记上，由 ctx.systemPrompt.variable 每轮装配时读走。
+//      没命中就返回空串，systemPrompt 会把空 section 过滤掉，一行 token 都不多花。
+//      'steer'（原行为）仍然保留，不写 via 时就是它。
+
+// 全局的"最近要注入的系统提示"标记：{ text, roundsLeft }
+// 多会话共用 —— 提醒内容本身是通用教训，串到别的会话也无害。
+const noticeState = { text: '', roundsLeft: 0 }
+let systemPromptRef = null
+
+// 运行时状态（不写进 watch.json）：id -> { cooldownUntil, lastMsgVersion }
+// ★ 为什么必须放这里而不是挂在 w 上：tick 每次都会 readWatches() 重新 parse 一遍文件，
+//   拿到的是全新对象，挂在 w 上的一切内存态（冷却、消息基线）下一次 tick 就没了。
+const runtimeState = new Map()
+function rt(w) {
+    const id = String(w && w.id || '')
+    let s = runtimeState.get(id)
+    if (!s) { s = { cooldownUntil: 0, lastMsgVersion: undefined }; runtimeState.set(id, s) }
+    return s
+}
+
+/** 供单测直接调：模拟一次"最近消息"判定。 */
+const recentUserTexts = []
+export function pushUserText(t) {
+    const s = String(t || '').toLowerCase()
+    if (!s) return
+    recentUserTexts.push(s)
+    while (recentUserTexts.length > 6) recentUserTexts.shift()
+    userMsgVersion += 1
+}
+export function matchSession(w) {
+    const kws = Array.isArray(w.keywords) ? w.keywords : (w.keyword ? [w.keyword] : [])
+    if (kws.length === 0) return false
+    // 冷却：命中过一次后，repeatSeconds（默认 600 秒）内不再重复提醒，
+    // 否则同一句话每 15 秒 tick 一次就会一直响。
+    const now = Date.now()
+    const s = rt(w)
+    if (now < s.cooldownUntil) return false
+    const window = Math.max(1, Number(w.window || 3))
+    const texts = recentUserTexts.slice(-window)
+    const hit = texts.some((t) => kws.some((k) => t.includes(String(k).toLowerCase())))
+    if (hit) s.cooldownUntil = now + Math.max(60, Number(w.repeatSeconds || 600)) * 1000
+    return hit
+}
+
 /** 读取监听清单。文件不存在/损坏都返回空数组，绝不抛。 */
 let lastRoot = {}
 function readWatches() {
@@ -163,6 +260,8 @@ export async function checkCondition(w, cfg = DEFAULTS) {
             return await portOpen(Number(w.port), w.host || '127.0.0.1')
         case 'time':
             return Date.now() >= new Date(w.at).getTime()
+        case 'session-match':
+            return matchSession(w)
         default:
             return false                            // 未知类型：静默不触发
     }
@@ -220,6 +319,18 @@ export function apply(ctx, config) {
         if (!reg('agent/session-start', ({ agent }) => { if (agent) remember(agent) })) return
         // 有消息进收件箱 = 用户刚在这个会话说话 → 最可靠的"活跃"信号
         if (!reg('agent/inbox/inserted', ({ agent }) => { if (agent) remember(agent) })) return
+        // 2026-11-27: 收用户消息文本，供 type:'session-match' 判断话题。
+        // 只收 type=user/message 且来源不是插件（避免守夜人自己注入的东西又触发自己）。
+        if (!reg('session/message', (ev) => {
+            try {
+                if (!ev || ev.type !== 'user/message') return
+                const src = ev.data && ev.data.source
+                if (src && src.kind === 'plugin') return
+                const content = (ev.data && ev.data.content) || []
+                const text = content.filter((c) => c && c.type === 'text').map((c) => c.text).join('')
+                pushUserText(text)
+            } catch { /* ignore */ }
+        })) return
         // 状态变成 running（开始干活）也算活跃
         if (!reg('agent/status', ({ agent, status }) => { if (agent && status === 'running') remember(agent) })) return
 
@@ -252,9 +363,19 @@ export function apply(ctx, config) {
         }
 
         async function fireOne(w) {
+            const text = w.message || `【守夜人】监听项 ${w.id} 的条件已达成。`
+
+            // 2026-11-27：via:'system-prompt' —— 不插对话、不唤醒回合，走系统提示注入。
+            // 没拿到 systemPrompt 服务时退化成 steer，绝不静默丢掉提醒。
+            if (w.via === 'system-prompt' && systemPromptRef) {
+                noticeState.text = String(text)
+                noticeState.roundsLeft = Math.max(1, Number(w.rounds || 3))
+                trace('已排入系统提示: ' + w.id + '  rounds=' + noticeState.roundsLeft + '  text=' + String(text).slice(0, 40))
+                return true
+            }
+
             const agent = pickAgent(w)
             if (!agent) { trace('无可用 agent，暂缓: ' + w.id); return false }
-            const text = w.message || `【守夜人】监听项 ${w.id} 的条件已达成。`
             // 来源标记：默认标成 plugin，UI 就不会把它当成"用户自己打的字"。
             // 每项也可自己覆盖（w.sourceKind / w.form），方便对比不同呈现方式。
             const kind = w.sourceKind || cfg.sourceKind
@@ -278,6 +399,44 @@ export function apply(ctx, config) {
             }
         }
 
+        /**
+         * session-semantic：把小窗口的最近用户消息丢给模型，问"该不该提醒"。
+         * 三条成本纪律都在这里：冷却、有新消息才判、硬超时。
+         */
+        async function checkSemantic(w, cfg) {
+            const now = Date.now()
+            const s = rt(w)
+            if (now < s.cooldownUntil) return false
+            // 首次看到这个监听项：只把基线对齐到当前消息版本，不判 ——
+            // 否则窗口里那些历史消息会被当成"刚来的新消息"，装完插件立刻误触发一次。
+            if (s.lastMsgVersion === undefined) {
+                s.lastMsgVersion = userMsgVersion
+                return false
+            }
+            if (s.lastMsgVersion === userMsgVersion) return false
+            const agent = pickAgent(w)
+            if (!agent) return false
+            const prompt = String(w.prompt || '')
+            if (!prompt) return false
+            const n = Math.max(1, Number(w.window || 5))
+            const recent = recentUserTexts.slice(-n).join('\n---\n')
+            if (!recent) return false
+            const full = prompt + '\n\n【最近对话（用户说的）】\n' + recent + '\n\n只回答一个词：是 或 否'
+            const ctrl = new AbortController()
+            const timer = setTimeout(() => { try { ctrl.abort() } catch { /* ignore */ } }, Math.max(1000, Number(w.timeoutMs || 8000)))
+            try {
+                const hit = await judgeWithLlm(agent, full, ctrl.signal)
+                s.lastMsgVersion = userMsgVersion
+                if (hit) s.cooldownUntil = now + Math.max(60, Number(w.cooldownSeconds || 900)) * 1000
+                if (hit) trace('语义判断命中: ' + w.id)
+                return hit
+            } catch {
+                return false
+            } finally {
+                clearTimeout(timer)
+            }
+        }
+
         async function tick() {
             try {
                 const list = readWatches()
@@ -287,7 +446,9 @@ export function apply(ctx, config) {
                     if (!w || w.fired) continue
                     let hit = false
                     try {
-                        hit = await checkCondition(w, cfg)
+                        hit = w.type === 'session-semantic'
+                            ? await checkSemantic(w, cfg)
+                            : await checkCondition(w, cfg)
                     } catch (e) {
                         trace('检查异常: ' + w.id + '  ' + (e?.message || e))
                     }
@@ -312,6 +473,9 @@ export function apply(ctx, config) {
                                 if (s !== null) { w.bytes = s + 1; rearmed = true }
                             }
                         }
+                        // session-match 永远不设 fired：它靠 __cooldownUntil 自己冷却，
+                        // 冷却期由 matchSession 在命中时写。
+                        if (w.type === 'session-match') rearmed = true
                         if (rearmed) {
                             w.firedCount = (w.firedCount || 0) + 1
                             w.lastFiredAt = new Date().toISOString()
@@ -357,6 +521,55 @@ export function apply(ctx, config) {
         try {
             if (!fs.existsSync(WATCH_FILE)) writeWatches([])
         } catch {}
+
+        // 2026-11-27: system-prompt 注入通道（via:'system-prompt' 用）。
+        // 走反射拿服务，拿不到只记一行日志，fireOne 会退化成 steer。
+        try {
+            let sp = null
+            try { sp = ctx.systemPrompt } catch { /* 未声明就试反射 */ }
+            if (!sp) {
+                try { sp = ctx.reflect && typeof ctx.reflect.get === 'function' ? ctx.reflect.get('systemPrompt', false) : null } catch { /* ignore */ }
+            }
+            if (sp && typeof sp.variable === 'function' && typeof sp.section === 'function') {
+                systemPromptRef = sp
+                const dv = sp.variable('night_watch_notice', () => {
+                    if (noticeState.roundsLeft > 0 && noticeState.text) {
+                        noticeState.roundsLeft -= 1
+                        return noticeState.text
+                    }
+                    return ''
+                })
+                const ds = sp.section({
+                    name: 'night-watch-notice',
+                    order: 91,
+                    text: '{{night_watch_notice}}',
+                })
+                disposers.push(dv, ds)
+                trace('系统提示注入通道已就绪（via:system-prompt 可用）')
+            } else {
+                trace('没有 systemPrompt 服务 —— via:system-prompt 会退化成 steer')
+            }
+        } catch (e) {
+            trace('系统提示注入通道注册失败（退化成 steer）: ' + (e?.message || e))
+        }
+
+        // 2026-11-27: llm 服务（type:'session-semantic' 用）—— 跟 compaction 摘要是同一条路。
+        // 拿不到只记日志，session-semantic 的监听项会永远判 false（不会误触发）。
+        try {
+            let llm = null
+            try { llm = ctx.llm } catch { /* 未声明就试反射 */ }
+            if (!llm) {
+                try { llm = ctx.reflect && typeof ctx.reflect.get === 'function' ? ctx.reflect.get('llm', false) : null } catch { /* ignore */ }
+            }
+            if (llm && typeof llm.stream === 'function') {
+                llmRef = llm
+                trace('llm 服务已就绪（type:session-semantic 可用）')
+            } else {
+                trace('没有 llm 服务 —— session-semantic 的监听项不会触发')
+            }
+        } catch (e) {
+            trace('llm 服务注册失败: ' + (e?.message || e))
+        }
 
         trace('守夜人就绪')
     } catch (e) {

@@ -1,7 +1,7 @@
 {
   "name": "dsh-proactive",
-  "version": "0.2.1",
-  "description": "DSH「守夜人」：长任务（下载/安装/等待）在 agent 回合结束后跑完时，把消息塞回会话、叫醒 agent 主动汇报。机制同 dsh-subagent 回报父代理（agent.steer + createUserMessage）。",
+  "version": "0.3.0",
+  "description": "DSH「守夜人」：长任务跑完时叫醒 agent 主动汇报；也能盯对话话题（关键词/语义）并往系统提示里注入提醒。",
   "license": "MIT",
   "author": "三文鱼",
   "repository": {
@@ -44,7 +44,11 @@
     "watchdog",
     "wake-agent",
     "long-running-task",
-    "file-watch"
+    "file-watch",
+    "session-match",
+    "semantic-trigger",
+    "system-prompt-injection",
+    "topic-trigger"
   ],
   "dsh": {
     "bundle": {

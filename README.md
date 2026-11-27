@@ -3,7 +3,7 @@
 > A DSH plugin that lets the agent **speak up on its own** when a long job finishes
 > after its turn has already ended — no more coming back to ask "is it done yet?".
 
-[![tests](https://img.shields.io/badge/tests-63%20passing-brightgreen)](#test-suite)
+[![tests](https://img.shields.io/badge/tests-83%20passing-brightgreen)](#test-suite)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 [中文说明 →](README.zh-CN.md)
@@ -63,6 +63,12 @@ the test suite to prove the difference is real.
 
 ## Trigger types
 
+The first six watch files, processes, or the clock. v0.3.0 adds two that watch the
+**conversation** instead — so "remind me when we start talking about X" no longer needs
+a file to grow first.
+
+### Files / processes / clock
+
 | `type` | Fires when | Required fields |
 |---|---|---|
 | `file-stable` | The file size is unchanged across `rounds` consecutive checks — **the standard "download finished" test** | `path`, `rounds` (default `stableRounds`, 3) |
@@ -72,18 +78,54 @@ the test suite to prove the difference is real.
 | `port-open` | A TCP connection to `host:port` succeeds — **the service came up** | `port`, `host` (default `127.0.0.1`) |
 | `time` | The clock passes `at` — an alarm | `at` (ISO date-time; bare = local, `Z` = UTC) |
 
-Unknown types never fire; they are skipped silently rather than guessed at.
+### Conversation (v0.3.0)
+
+| `type` | Fires when | Required fields |
+|---|---|---|
+| `session-match` | Any of the last `window` **user** messages contains one of `keywords` | `keywords`, `window` (default 3), `repeatSeconds` (default 600, cooldown after a hit) |
+| `session-semantic` | The model answers "yes" to "does the recent conversation match `prompt`?" | `prompt`, `window` (default 5), `cooldownSeconds` (default 900) |
+
+Two rules keep `session-match` honest:
+
+- **User messages only.** Messages injected by the plugin itself (`source.kind === 'plugin'`)
+  are ignored — otherwise the plugin saying "plugin" would retrigger itself forever.
+- **The user's words, never the model's.** Reminding the model whenever *it* mentions the
+  topic is self-reinforcement, not a trigger.
+
+`session-semantic` calls `ctx.llm.stream()` — the same path compaction uses for its summaries —
+so it needs **no extra API key or provider**. Three cost guards, all of them necessary:
+
+- `cooldownSeconds`: at most one model judgement per this many seconds (default 900)
+- **No new user message → no call at all**
+- `timeoutMs` (default 8000) hard timeout and `maxTokens: 8` (it only needs yes/no)
+
+Unknown answers, thrown errors, and timeouts **all count as "no"**. A reminder must never
+fire because the model call failed.
+
+### How the notice is delivered
+
+| `via` | Effect | Use it for |
+|---|---|---|
+| `steer` (default) | Posts a message into the conversation and **wakes a turn** | "The job is done, go report it" |
+| `system-prompt` | Parks a short-lived notice that `ctx.systemPrompt` reads during each prompt assembly; it survives `rounds` (default 3) assemblies | "Mention this, but do not interrupt me" |
+
+`system-prompt` costs nothing when idle: the provider returns an empty string when there is no
+notice, and `systemPrompt` filters empty sections out. If the `systemPrompt` service is
+unavailable the notice **degrades to `steer`** rather than being silently dropped.
 
 ### Common fields
 
 | Field | Meaning |
 |---|---|
-| `id` | Identifies the entry in `boot.log` and in the default message. Any string. |
+| `id` | Identifies the entry in `boot.log` and in the default message. Any string. **Runtime state (cooldowns, message baselines) is keyed by it — do not change it casually.** |
 | `message` | What the agent reads when it wakes. Write it as an instruction to the agent, not as a note to yourself. |
 | `sessionId` | Optional. Wake only this session. If it is not open, the entry is skipped for that tick and stays armed — it is **never** redirected to another session. Omit to wake the most recently active one. |
 | `sourceKind` | Optional. `plugin` (default, not rendered) or `user` (rendered as a user bubble). |
 | `form` | Optional, with `sourceKind: 'plugin'`. Free-form tag on the source; `notice` also carries a `summary` (first 120 chars of `message`). |
 | `repeatSeconds` | Optional. Re-arm instead of firing once — see below. |
+| `via` | Optional. `steer` (default) or `system-prompt`, see above. |
+| `rounds` | Optional. How many prompt assemblies a `system-prompt` notice survives (default 3). |
+| `cooldownSeconds` | Optional, `session-semantic` only. Minimum seconds between two model judgements (default 900). |
 
 ### Which session gets woken
 

@@ -5,6 +5,42 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-27
+
+这个版本把「守夜人」从"只会盯文件"升级成"能盯对话"，并新增一条**不打扰对话**的注入通道。
+背景：它原来只有 `time` / `file-*` / `process-exit` / `port-open` 这几档"看文件看端口"的触发，
+而实际最想要的是"聊到某个话题时提醒我一句"——那种提醒既不该吵，也不该等文件变大。
+
+### Added
+
+- **`type: 'session-match'`** — 最近 N 条**用户**消息里命中 `keywords` 任意一个就触发。
+  - 只看用户消息；插件自己注入的消息（`source.kind === 'plugin'`）不计入，防止自己触发自己。
+  - `window`（默认 3）控制看几条。
+  - 命中后按 `repeatSeconds`（默认 600 秒）冷却，不会每 15 秒 tick 一次就一直响。
+- **`type: 'session-semantic'`** — 把一小段最近对话丢给模型，由它回答"是/否"，决定要不要提醒。
+  - 走 DSH 自己的 `ctx.llm.stream()`（和 compaction 摘要同一条路径），不用另配 API key / provider。
+  - 三条成本纪律：`cooldownSeconds`（默认 900）、**没有新用户消息直接跳过**、`timeoutMs`（默认 8000）硬超时 + `maxTokens`（默认 8）。
+  - 模型不回答 / 抛错 / 超时，一律当"否"——提醒不能因为 AI 挂了而误触发。
+  - 首次看到监听项时只把消息基线对齐到当前版本，不判（否则装完插件会拿历史消息误触发一次）。
+- **`via: 'system-prompt'`** — 触发后不 `steer`、不插对话、不唤醒新回合，而是挂到一条短期标记上，
+  由 `ctx.systemPrompt.variable()` 在每轮提示装配时读走；`rounds`（默认 3）轮后自动消失。
+  - 没命中时返回空串，`systemPrompt` 会把空 section 过滤掉，**一行 token 都不多花**。
+  - 拿不到 `systemPrompt` 服务时自动退化成原来的 `steer`（绝不静默丢掉提醒）。
+
+### Fixed
+
+- **运行时状态不再挂在 watch 对象上。** `tick()` 每次都 `readWatches()` 重新 parse 一遍文件，
+  拿到的是全新对象——所以挂在 `w.__cooldownUntil` / `w.__lastMsgVersion` 上的冷却和消息基线
+  **下一次 tick 就没了**，表现为"冷却永不生效、语义判断要么永远不判要么每轮都判"。
+  现在改用模块级 `runtimeState`（key = 监听项 id），并且从不写回 `watch.json`。这条由新增的
+  C10/C11 用例逮到（C10 先跑出 `calls=1`，说明它把历史消息当成了新消息）。
+
+### Changed
+
+- `watch.json` 里可以同时挂多种类型；老类型（`time` / `file-*` / `process-exit` / `port-open`）行为不变。
+- 测试从 68 例扩到 **83 例**，新增 C 节覆盖 `session-match` / `session-semantic` /
+  `system-prompt` 注入（含"没有新消息不调 llm""返回否不注入""插件来源消息不计入窗口"）。
+
 ## [Unreleased]
 
 ### Changed
