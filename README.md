@@ -82,17 +82,22 @@ a file to grow first.
 
 | `type` | Fires when | Required fields |
 |---|---|---|
-| `session-match` | Any of the last `window` messages contains one of `keywords`; `scope` decides whether that means user messages or tool calls | `keywords`, `window` (default 3), `scope` (`user` default / `tool` / `both`), `repeatSeconds` (default 600, cooldown after a hit) |
+| `session-match` | Any of the last `window` messages contains one of `keywords`; `scope` decides whose words are inspected | `keywords`, `window` (default 3), `scope` (see below), `repeatSeconds` (default 600, cooldown after a hit) |
 | `session-semantic` | The model answers "yes" to "does the recent conversation match `prompt`?" | `prompt`, `window` (default 5), `cooldownSeconds` (default 900) |
 
 Three rules keep `session-match` honest:
 
 - **`scope` decides whose words are inspected.** `user` (default) reads what the user said;
-  `tool` reads the **name and arguments of tool calls** (`write` / `edit` / `pwsh` …); `both`
-  reads either. `scope: 'tool'` is how you say "remind me when I am about to touch that thing" —
+  `tool` reads the **name and arguments of tool calls** (`write` / `edit` / `pwsh` …);
+  `thinking` reads the **model's own reasoning stream** (`llm/stream` reasoning-delta,
+  listened to without altering the stream); `both` = user+tool; `all` = all three; an array
+  such as `["user","thinking"]` also works.
+  `scope: 'tool'` is how you say "remind me when I am about to touch that thing" —
   e.g. when the arguments mention `cordis.patch.yml` or a plugin name, a reminder at that moment
-  is worth far more than one after the fact. Tool results are **not** collected: a keyword
-  appearing in a command's output does not mean anything is about to be modified.
+  is worth far more than one after the fact. `scope: 'thinking'` lands even earlier: the
+  decision to touch something usually surfaces in reasoning before any tool call is issued.
+  Tool results are **not** collected: a keyword appearing in a command's output does not mean
+  anything is about to be modified.
 
 
 - **User messages only.** Messages injected by the plugin itself (`source.kind === 'plugin'`)

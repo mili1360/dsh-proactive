@@ -144,6 +144,15 @@ const recentUserTexts = []
 // 光看用户说什么不够准，真正的动手指令是我这边的 tool/call（write / edit / pwsh ...）。
 // 只收工具名 + 参数（JSON.stringify 后变小写），不含工具结果，避免把回执内容算成"要动手"。
 const recentToolTexts = []
+// 2026-11-27: 思考窗口。scope:'thinking' 用它 —— "我在脑子里决定要改插件"比工具调用更早发生。
+// 思考从 llm/stream 的 reasoning-delta 旁听收集（流层原样透传，只读不改）。
+const recentThinkTexts = []
+export function pushThinkText(t) {
+    const s = String(t || '').trim().toLowerCase()
+    if (!s) return
+    recentThinkTexts.push(s)
+    while (recentThinkTexts.length > 3) recentThinkTexts.shift()
+}
 export function pushUserText(t) {
     const s = String(t || '').toLowerCase()
     if (!s) return
@@ -167,11 +176,16 @@ export function matchSession(w) {
     const s = rt(w)
     if (now < s.cooldownUntil) return false
     const window = Math.max(1, Number(w.window || 3))
-    // scope: 'user'（默认）只看用户消息 / 'tool' 只看工具调用 / 'both' 都看
-    const scope = String(w.scope || 'user')
+    // scope：'user'（默认）只看用户消息 / 'tool' 只看工具调用 / 'thinking' 只看思考
+    //        'both' = user+tool / 'all' = user+tool+thinking / 也可以给数组 ['user','thinking']
+    const raw = String(w.scope || 'user')
+    const scopes = Array.isArray(w.scope)
+        ? w.scope.map(String)
+        : (raw === 'both' ? ['user', 'tool'] : (raw === 'all' ? ['user', 'tool', 'thinking'] : [raw]))
     const pools = []
-    if (scope === 'user' || scope === 'both') pools.push(...recentUserTexts.slice(-window))
-    if (scope === 'tool' || scope === 'both') pools.push(...recentToolTexts.slice(-window))
+    if (scopes.includes('user')) pools.push(...recentUserTexts.slice(-window))
+    if (scopes.includes('tool')) pools.push(...recentToolTexts.slice(-window))
+    if (scopes.includes('thinking')) pools.push(...recentThinkTexts.slice(-Math.min(window, 3)))
     const hit = pools.some((t) => kws.some((k) => t.includes(String(k).toLowerCase())))
     if (hit) s.cooldownUntil = now + Math.max(60, Number(w.repeatSeconds || 600)) * 1000
     return hit
@@ -355,6 +369,25 @@ export function apply(ctx, config) {
                 const text = content.filter((c) => c && c.type === 'text').map((c) => c.text).join('')
                 pushUserText(text)
             } catch { /* ignore */ }
+        })) return
+        // 2026-11-27: 旁听思考流（scope:'thinking' 用）。
+        // 只读 reasoning-delta、原样 yield 回去，绝不改内容、不吞 chunk、不干扰 finish。
+        // 收的是"模型自己在想什么"，比 tool/call 更早一步 —— 想到要动插件时就该提醒。
+        if (!reg('llm/stream', (options, next) => {
+            const inner = next()
+            return (async function* () {
+                let buf = ''
+                for await (const chunk of inner) {
+                    try {
+                        if (chunk && chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') {
+                            buf += chunk.text
+                            if (buf.length >= 600) { pushThinkText(buf); buf = '' }
+                        }
+                    } catch { /* 旁听失败不影响主流 */ }
+                    yield chunk
+                }
+                try { if (buf) pushThinkText(buf) } catch { /* ignore */ }
+            })()
         })) return
         // 状态变成 running（开始干活）也算活跃
         if (!reg('agent/status', ({ agent, status }) => { if (agent && status === 'running') remember(agent) })) return

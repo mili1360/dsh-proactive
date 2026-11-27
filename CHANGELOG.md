@@ -45,14 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`session-match` 支持 `scope`：`user`（默认）/ `tool` / `both`。**
+- **`session-match` 支持 `scope`：`user`（默认）/ `tool` / `thinking` / `both` / `all`（也可给数组）。**
   `scope: 'tool'` 看的是**工具调用的名字 + 参数**（`write` / `edit` / `pwsh` … 的 arguments），
   用来做"我准备动某个东西时就提醒我"，而不是等用户嘴里提到关键词。
   动机：光看用户消息不准——"我准备动手改 X"这个意图往往只体现在工具调用的参数里。
+  `scope: 'thinking'` 更进一步：旁听 `llm/stream` 的 `reasoning-delta`（只读透传、不改流、不吞 chunk），
+  收模型自己的思考。决定要动某个东西的念头通常比工具调用早一步出现，那时候提醒才来得及。
+  `both` = user+tool，`all` = 三者都看。
   只收工具名和参数，**不收工具结果**（回执里出现关键词不算"要动手"）。
-  工具窗口和用户窗口各自独立（都是最近 6 条、`window` 再截），互不污染。
-  测试：C16~C20（工具窗口为空不命中 / `scope:tool` 不看用户消息 / 参数命中触发 /
-  `scope:user` 不被工具触发 / `scope:both` 两边都看）。
+  工具/用户/思考三个窗口各自独立（各最近 6 条，思考窗口再按 `window` 截到最多 3 条），互不污染。
+  测试：C16~C24（工具窗口为空不命中 / `scope:tool` 不看用户消息 / 参数命中触发 /
+  `scope:user` 不被工具触发 / `scope:both` 两边都看 / 思考命中 / `scope:all` 看思考 /
+  思考窗口滑出后不命中）。
 
 ### Changed
 

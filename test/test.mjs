@@ -656,6 +656,28 @@ section('C. session-match / session-semantic / system-prompt 注入（2026-11-27
     ok('C20 scope=both 能看到工具调用', matchSession(bw) === true)
 }
 
+// --- C21~C23: scope:'thinking' —— 从思考流里认出来 ---
+{
+    const { pushThinkText, matchSession: ms } = await import('../index.js')
+
+    const kw = { id: 'thinkonly', type: 'session-match', scope: 'thinking', keywords: ['改插件'], window: 2 }
+    // 思考窗口里还没相关内容
+    pushThinkText('今天要看一看别的')
+    ok('C21 思考窗口不命中时 false', ms(kw) === false)
+
+    pushThinkText('下一步该改插件的 index.js 了，先想清楚再动')
+    ok('C22 思考里命中 -> 触发', ms(kw) === true)
+
+    // cool down now active; a different id to test scope:'all'
+    const all = { id: 'allscope', type: 'session-match', scope: 'all', keywords: ['改插件'], window: 3 }
+    ok('C23 scope=all 也看思考', ms(all) === true)
+
+    // 从思考窗口滑出后不再命中
+    const narrow = { id: 'thinknarrow', type: 'session-match', scope: 'thinking', keywords: ['改插件'], window: 1 }
+    pushThinkText('另外那段代码不用动')
+    ok('C24 思考窗口滑出 -> false', ms(narrow) === false)
+}
+
 // ============================================================
 // 收尾
 // ============================================================
