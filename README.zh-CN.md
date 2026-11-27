@@ -79,10 +79,17 @@ agent.steer(createUserMessage({
 
 | `type` | 什么时候触发 | 必填字段 |
 |---|---|---|
-| `session-match` | 最近 `window` 条**用户**消息里，命中 `keywords` 任意一个 | `keywords`、`window`（默认 3）、`repeatSeconds`（默认 600，命中后冷却）|
+| `session-match` | 最近 `window` 条消息里，命中 `keywords` 任意一个（看用户消息还是工具调用由 `scope` 决定）| `keywords`、`window`（默认 3）、`scope`（`user` 默认 / `tool` / `both`）、`repeatSeconds`（默认 600，命中后冷却）|
 | `session-semantic` | 把最近对话丢给模型，它回答"是"就触发 —— **判断交给 AI，规则交给它自己** | `prompt`、`window`（默认 5）、`cooldownSeconds`（默认 900）|
 
-`session-match` 的两个纪律：
+`session-match` 的三个纪律：
+
+- **`scope` 决定看谁的**：`user`（默认）只看你说的话；`tool` 只看**工具调用的名字 + 参数**
+  （`write` / `edit` / `pwsh` 的 arguments）；`both` 两边都看。
+  `scope: 'tool'` 的用处是"我准备动某个东西时提醒我"——比如参数里出现
+  `cordis.patch.yml` 或某个插件名，就说明我正要去改插件，这时提醒最值钱。
+  只收工具名和参数，**不收工具结果**：回执里出现关键词不算"要动手"。
+
 
 - **只看用户消息**。插件自己注入的消息（`source.kind === 'plugin'`）不计入 —— 否则
   插件说一句"插件"就会触发自己，越滚越大。

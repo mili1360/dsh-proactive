@@ -8,7 +8,7 @@
     "process-exit": "process (image name, e.g. curl.exe). Fires when the process is gone. Uses tasklist on Windows; on a platform where the lookup fails it returns nothing and the entry is skipped rather than fired.",
     "port-open": "port, host (default 127.0.0.1). Fires when a TCP connection to host:port succeeds.",
     "time": "at (an ISO date-time string). Fires when the clock passes it. '2026-01-01T22:00:00' is local time; append Z to mean UTC.",
-    "session-match": "keywords (string[]), window (default 3), repeatSeconds (default 600). Fires when any of the last N USER messages contains any keyword. Plugin-sourced messages are ignored so the plugin never triggers itself. Only the user text is inspected, never the model output.",
+    "session-match": "keywords (string[]), window (default 3), scope (user default / tool / both), repeatSeconds (default 600). Fires when any of the last N messages contains any keyword. scope=user reads what the user said; scope=tool reads tool-call names and arguments (write/edit/pwsh ...), which is how \"remind me when I am about to touch X\" is expressed; scope=both reads either. Plugin-sourced user messages are ignored so the plugin never triggers itself, and tool RESULTS are never collected.",
     "session-semantic": "prompt, window (default 5), cooldownSeconds (default 900), timeoutMs (default 8000). Asks the model (via ctx.llm.stream, the same path compaction uses) whether the recent conversation matches `prompt`; fires on a yes. Cost guards: cooldown, no call when no new user message arrived, hard timeout, maxTokens 8. Errors/timeouts count as no."
   },
   "_COMMON_FIELDS": {
@@ -98,7 +98,8 @@
       "via": "system-prompt",
       "rounds": 3,
       "repeatSeconds": 900,
-      "message": "[reminder] read the postmortem before touching the session log."
+      "message": "[reminder] read the postmortem before touching the session log.",
+      "scope": "user"
     },
     {
       "id": "example-session-semantic",
@@ -111,6 +112,21 @@
       "cooldownSeconds": 900,
       "timeoutMs": 8000,
       "message": "[reminder] re-read the postmortem first."
+    },
+    {
+      "id": "example-session-tool-match",
+      "type": "session-match",
+      "scope": "tool",
+      "_comment": "Remind me right before I modify one of these files: scope:tool inspects the arguments of write/edit/pwsh calls, not the user's words.",
+      "keywords": [
+        "cordis.patch.yml",
+        "dsh-proactive"
+      ],
+      "window": 2,
+      "via": "system-prompt",
+      "rounds": 3,
+      "repeatSeconds": 900,
+      "message": "[reminder] read the postmortem before editing this file."
     }
   ]
 }

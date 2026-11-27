@@ -66,8 +66,8 @@ const DEFAULTS = {
 
 // ---------------------------------------------------------------- session-semantic（2026-11-27 加）
 //
-// 三文鱼要的"外接 AI 语义注入"：不是拿关键词硬匹配，而是把小窗口的最近对话丢给模型，
-// 让它判断"这个话题该不该提醒"。实现上走 DSH 自己的 ctx.llm.stream（跟 compaction 摘要用同一条路），
+// 语义触发：不拿关键词硬匹配，而是把小窗口的最近对话丢给模型，让它判断
+// "这个话题该不该提醒"。实现上走 DSH 自己的 ctx.llm.stream（跟 compaction 摘要用同一条路），
 // 所以不用额外的 API key、不用另配 provider。
 //
 // 三条成本纪律（否则每 15 秒烧一次）：
@@ -76,6 +76,7 @@ const DEFAULTS = {
 //   3. 硬超时：默认 8 秒，超时当作"不提醒"
 let llmRef = null
 let userMsgVersion = 0
+let toolVersion = 0
 
 /** 调一次模型做 yes/no 判断。失败/超时一律 false（提醒不能因为 AI 挂了而误触发）。 */
 async function judgeWithLlm(agent, prompt, signal) {
@@ -109,7 +110,7 @@ async function judgeWithLlm(agent, prompt, signal) {
     return s.startsWith('是') || s.startsWith('yes') || s.startsWith('true')
 }
 //
-// 背景：三文鱼要的是"聊到某个话题时自动提醒我去读检讨"，守夜人原来只有
+// 背景：想让守夜人在"聊到某个话题"时提醒一句，而它原来只有
 // time / file-size / file-stable / process-exit / port-open 这几种"看文件看端口"的触发，
 // 没有"看对话内容"这一档。这里补上。
 //
@@ -139,12 +140,23 @@ function rt(w) {
 
 /** 供单测直接调：模拟一次"最近消息"判定。 */
 const recentUserTexts = []
+// 2026-11-27: 工具调用文本窗口。用来实现"我要动插件时提醒我"——
+// 光看用户说什么不够准，真正的动手指令是我这边的 tool/call（write / edit / pwsh ...）。
+// 只收工具名 + 参数（JSON.stringify 后变小写），不含工具结果，避免把回执内容算成"要动手"。
+const recentToolTexts = []
 export function pushUserText(t) {
     const s = String(t || '').toLowerCase()
     if (!s) return
     recentUserTexts.push(s)
     while (recentUserTexts.length > 6) recentUserTexts.shift()
     userMsgVersion += 1
+}
+export function pushToolText(t) {
+    const s = String(t || '').toLowerCase()
+    if (!s) return
+    recentToolTexts.push(s)
+    while (recentToolTexts.length > 6) recentToolTexts.shift()
+    toolVersion += 1
 }
 export function matchSession(w) {
     const kws = Array.isArray(w.keywords) ? w.keywords : (w.keyword ? [w.keyword] : [])
@@ -155,8 +167,12 @@ export function matchSession(w) {
     const s = rt(w)
     if (now < s.cooldownUntil) return false
     const window = Math.max(1, Number(w.window || 3))
-    const texts = recentUserTexts.slice(-window)
-    const hit = texts.some((t) => kws.some((k) => t.includes(String(k).toLowerCase())))
+    // scope: 'user'（默认）只看用户消息 / 'tool' 只看工具调用 / 'both' 都看
+    const scope = String(w.scope || 'user')
+    const pools = []
+    if (scope === 'user' || scope === 'both') pools.push(...recentUserTexts.slice(-window))
+    if (scope === 'tool' || scope === 'both') pools.push(...recentToolTexts.slice(-window))
+    const hit = pools.some((t) => kws.some((k) => t.includes(String(k).toLowerCase())))
     if (hit) s.cooldownUntil = now + Math.max(60, Number(w.repeatSeconds || 600)) * 1000
     return hit
 }
@@ -321,9 +337,18 @@ export function apply(ctx, config) {
         if (!reg('agent/inbox/inserted', ({ agent }) => { if (agent) remember(agent) })) return
         // 2026-11-27: 收用户消息文本，供 type:'session-match' 判断话题。
         // 只收 type=user/message 且来源不是插件（避免守夜人自己注入的东西又触发自己）。
+        // 同一条监听里顺手收 tool/call 的参数 —— scope:'tool' 就靠它（"我要动插件时提醒我"）。
         if (!reg('session/message', (ev) => {
             try {
-                if (!ev || ev.type !== 'user/message') return
+                if (!ev) return
+                if (ev.type === 'tool/call') {
+                    const name = String((ev.data && ev.data.name) || '')
+                    let args = ''
+                    try { args = JSON.stringify((ev.data && ev.data.arguments) || {}) } catch { args = '' }
+                    pushToolText(name + ' ' + args)
+                    return
+                }
+                if (ev.type !== 'user/message') return
                 const src = ev.data && ev.data.source
                 if (src && src.kind === 'plugin') return
                 const content = (ev.data && ev.data.content) || []

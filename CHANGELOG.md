@@ -43,6 +43,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`session-match` 支持 `scope`：`user`（默认）/ `tool` / `both`。**
+  `scope: 'tool'` 看的是**工具调用的名字 + 参数**（`write` / `edit` / `pwsh` … 的 arguments），
+  用来做"我准备动某个东西时就提醒我"，而不是等用户嘴里提到关键词。
+  动机：光看用户消息不准——"我准备动手改 X"这个意图往往只体现在工具调用的参数里。
+  只收工具名和参数，**不收工具结果**（回执里出现关键词不算"要动手"）。
+  工具窗口和用户窗口各自独立（都是最近 6 条、`window` 再截），互不污染。
+  测试：C16~C20（工具窗口为空不命中 / `scope:tool` 不看用户消息 / 参数命中触发 /
+  `scope:user` 不被工具触发 / `scope:both` 两边都看）。
+
 ### Changed
 
 - **Hardening: `apply()` can no longer take a profile down, and can no longer half-activate.**

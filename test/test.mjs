@@ -542,16 +542,16 @@ section('C. session-match / session-semantic / system-prompt 注入（2026-11-27
     fs.writeFileSync(cWatch, JSON.stringify({
         watches: [{
             id: 'sp注入', type: 'file-exists', path: tmpFile,
-            via: 'system-prompt', rounds: 2, message: '【测试】去读检讨',
+            via: 'system-prompt', rounds: 2, message: '【测试】请先读须知',
         }],
     }))
     apply(ctx, { enabled: true, intervalMs: 3000, watchFile: cWatch, logFile: cLog })
     await sleep(QUIET)
     ok('C6 日志显示系统提示通道已就绪', fs.readFileSync(cLog, 'utf8').includes('系统提示注入通道已就绪'))
     const assembled = sp._assemble()
-    ok('C7 第一轮装配能读到注入内容', assembled.some((t) => t.includes('去读检讨')), JSON.stringify(assembled))
+    ok('C7 第一轮装配能读到注入内容', assembled.some((t) => t.includes('请先读须知')), JSON.stringify(assembled))
     const second = sp._assemble()
-    ok('C8 第二轮仍在（rounds:2）', second.some((t) => t.includes('去读检讨')))
+    ok('C8 第二轮仍在（rounds:2）', second.some((t) => t.includes('请先读须知')))
     const third = sp._assemble()
     ok('C9 rounds 用完后不再注入', third.length === 0, JSON.stringify(third))
     ctx._cleanup()
@@ -573,7 +573,7 @@ section('C. session-match / session-semantic / system-prompt 注入（2026-11-27
             prompt: '最近对话是不是在讨论会话日志？',
             window: 2, via: 'system-prompt', rounds: 1,
             cooldownSeconds: 900, timeoutMs: 3000,
-            message: '【语义命中】去看检讨',
+            message: '【语义命中】请先读须知',
         }],
     }))
     apply(ctx, { enabled: true, intervalMs: 3000, watchFile: sWatch, logFile: sLog })
@@ -630,6 +630,30 @@ section('C. session-match / session-semantic / system-prompt 注入（2026-11-27
     })
     ok('C15 插件来源消息不计入话题窗口', (await checkCondition(w2)) === false)
     ctx._cleanup()
+}
+
+// --- C16~C20: scope:'tool' —— 只在我动插件时提醒 ---
+{
+    const { pushUserText: push, pushToolText, matchSession } = await import('../index.js')
+    for (let i = 0; i < 8; i++) { push('无关'); pushToolText('read 无关') }
+
+    const tw = { id: 'toolonly', type: 'session-match', scope: 'tool', keywords: ['cordis.patch.yml', 'dsh-proactive'], window: 2 }
+    ok('C16 工具窗口为空时不命中', matchSession(tw) === false)
+
+    // 用户说了插件，但 scope=tool 不该看用户消息
+    push('帮我改一下插件')
+    ok('C17 scope=tool 不看用户消息', matchSession(tw) === false)
+
+    pushToolText('write {"file_path":"E:/deepseek插件/dsh-proactive/index.js"}')
+    ok('C18 工具参数命中 -> 触发', matchSession(tw) === true)
+
+    // scope=user 不该被工具调用触发
+    const uw = { id: 'useronly', type: 'session-match', scope: 'user', keywords: ['cordis.patch.yml'], window: 3 }
+    ok('C19 scope=user 不被工具触发', matchSession(uw) === false)
+
+    // both 都能看（用 C18 推过的工具文本里的词）
+    const bw = { id: 'both', type: 'session-match', scope: 'both', keywords: ['dsh-proactive'], window: 3 }
+    ok('C20 scope=both 能看到工具调用', matchSession(bw) === true)
 }
 
 // ============================================================
